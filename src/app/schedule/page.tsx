@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Calendar, Clock, CheckCircle, XCircle, DollarSign, QrCode } from 'lucide-react';
+import { Plus, Calendar, Clock, CheckCircle, XCircle, DollarSign, QrCode, Link2, Bell } from 'lucide-react';
 import { formatCurrency, formatDate, formatTime } from '@/lib/utils';
 import { generatePixPayload } from '@/lib/pix';
 import type { Trainer, ScheduleSlot, Booking } from '@/types/database';
@@ -38,6 +38,8 @@ export default function SchedulePage() {
 
   const [pixDialog, setPixDialog] = useState<{ open: boolean; booking: BookingWithDetails | null }>({ open: false, booking: null });
   const [pixPayload, setPixPayload] = useState('');
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [bookingRequests, setBookingRequests] = useState<any[]>([]);
 
   useEffect(() => { loadAll(); }, []);
 
@@ -50,13 +52,15 @@ export default function SchedulePage() {
     setTrainer(t);
 
     const today = new Date().toISOString().split('T')[0];
-    const [{ data: sl }, { data: bk }] = await Promise.all([
+    const [{ data: sl }, { data: bk }, { data: reqs }] = await Promise.all([
       supabase.from('schedule_slots').select('*').eq('trainer_id', t.id).order('slot_date').order('slot_time'),
       supabase.from('bookings').select('*, schedule_slots(*), clients(full_name, phone)').eq('trainer_id', t.id).order('created_at', { ascending: false }),
+      supabase.from('booking_requests').select('*, schedule_slots(slot_date, slot_time)').eq('trainer_id', t.id).eq('status', 'pending').order('created_at', { ascending: false }),
     ]);
 
     setSlots(sl ?? []);
     setBookings(bk as BookingWithDetails[] ?? []);
+    setBookingRequests(reqs ?? []);
     setLoading(false);
   }
 
@@ -147,19 +151,43 @@ export default function SchedulePage() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold">Agenda</h1>
           <p className="text-sm text-muted-foreground">Gerencie seus horários disponíveis</p>
         </div>
-        <Button onClick={() => setShowAddSlot(true)}>
-          <Plus className="h-4 w-4 mr-2" />Adicionar Horário
-        </Button>
+        <div className="flex gap-2 flex-wrap">
+          {trainer && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                const url = `${window.location.origin}/book/${trainer.id}`;
+                navigator.clipboard.writeText(url);
+                setLinkCopied(true);
+                setTimeout(() => setLinkCopied(false), 2000);
+              }}
+            >
+              <Link2 className="h-4 w-4 mr-2" />
+              {linkCopied ? 'Link copiado!' : 'Copiar link da agenda'}
+            </Button>
+          )}
+          <Button onClick={() => setShowAddSlot(true)}>
+            <Plus className="h-4 w-4 mr-2" />Adicionar Horário
+          </Button>
+        </div>
       </div>
 
       <Tabs defaultValue="slots">
         <TabsList>
           <TabsTrigger value="slots">Horários Disponíveis</TabsTrigger>
+          <TabsTrigger value="requests">
+            Solicitações
+            {bookingRequests.length > 0 && (
+              <Badge variant="destructive" className="ml-2 text-xs h-4 px-1">
+                {bookingRequests.length}
+              </Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="bookings">
             Agendamentos
             {bookings.filter((b) => b.status === 'pending_payment').length > 0 && (
@@ -169,6 +197,59 @@ export default function SchedulePage() {
             )}
           </TabsTrigger>
         </TabsList>
+
+        {/* Aba de Solicitações */}
+        <TabsContent value="requests" className="mt-4">
+          {bookingRequests.length === 0 ? (
+            <div className="text-center py-12">
+              <Bell className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+              <h3 className="font-medium">Nenhuma solicitação pendente</h3>
+              <p className="text-sm text-muted-foreground">Quando um cliente solicitar um horário pelo link, aparecerá aqui.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {bookingRequests.map((req) => (
+                <Card key={req.id}>
+                  <CardContent className="p-4 space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-medium">{req.guest_name}</p>
+                        <p className="text-sm text-muted-foreground">{req.guest_phone}</p>
+                        {req.guest_email && <p className="text-sm text-muted-foreground">{req.guest_email}</p>}
+                        {req.schedule_slots && (
+                          <p className="text-sm mt-1">
+                            <span className="font-medium">{formatDate(req.schedule_slots.slot_date)}</span>
+                            {' às '}{formatTime(req.schedule_slots.slot_time)}
+                          </p>
+                        )}
+                        {req.message && <p className="text-sm text-muted-foreground italic mt-1">"{req.message}"</p>}
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <a
+                          href={`https://wa.me/55${(req.guest_phone || '').replace(/\D/g, '')}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <Button size="sm" variant="outline">WhatsApp</Button>
+                        </a>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={async () => {
+                            await supabase.from('booking_requests').update({ status: 'cancelled' }).eq('id', req.id);
+                            loadAll();
+                          }}
+                        >
+                          <XCircle className="h-4 w-4 text-muted-foreground" />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
 
         <TabsContent value="slots" className="mt-4">
           {loading ? (

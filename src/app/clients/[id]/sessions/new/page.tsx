@@ -10,9 +10,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { ArrowLeft, Plus, Trash2, Heart, Activity, Brain, Save } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ArrowLeft, Plus, Trash2, Heart, Activity, Brain, Save, ChevronDown, ChevronUp, Sparkles, Loader2 } from 'lucide-react';
 import Link from 'next/link';
-import { pseLabel } from '@/lib/utils';
+import { pseLabel, calculateAge } from '@/lib/utils';
 import type { WorkoutGroup, PrescribedExercise, SetData } from '@/types/database';
 
 type GroupWithExercises = WorkoutGroup & { prescribed_exercises: PrescribedExercise[] };
@@ -24,6 +25,18 @@ interface SessionExerciseRow {
   sets: SetData[];
 }
 
+interface ClientProfile {
+  full_name: string;
+  age: number | null;
+  objective: string | null;
+  health_conditions: string | null;
+  medications: string | null;
+  medical_notes: string | null;
+  weight_kg: number | null;
+  height_cm: number | null;
+  resting_hr: number | null;
+}
+
 export default function NewSessionPage() {
   const params = useParams();
   const clientId = params.id as string;
@@ -31,9 +44,11 @@ export default function NewSessionPage() {
   const supabase = createClient();
 
   const [trainerId, setTrainerId] = useState('');
+  const [client, setClient] = useState<ClientProfile | null>(null);
   const [groups, setGroups] = useState<GroupWithExercises[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const [showPhysio, setShowPhysio] = useState(false);
   const [form, setForm] = useState({
     session_date: new Date().toISOString().split('T')[0],
     start_time: '',
@@ -46,6 +61,12 @@ export default function NewSessionPage() {
 
   const [exercises, setExercises] = useState<SessionExerciseRow[]>([]);
 
+  // IA
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiSuggestion, setAiSuggestion] = useState('');
+  const [aiError, setAiError] = useState('');
+
   useEffect(() => {
     async function load() {
       const { data: { user } } = await supabase.auth.getUser();
@@ -54,13 +75,25 @@ export default function NewSessionPage() {
       if (!t) return;
       setTrainerId(t.id);
 
-      const { data: plan } = await supabase
-        .from('workout_plans')
-        .select('id, workout_groups(*, prescribed_exercises(*))')
-        .eq('client_id', clientId)
-        .eq('active', true)
-        .single();
+      const [{ data: c }, { data: plan }, { data: meas }] = await Promise.all([
+        supabase.from('clients').select('*').eq('id', clientId).single(),
+        supabase.from('workout_plans').select('id, workout_groups(*, prescribed_exercises(*))').eq('client_id', clientId).eq('active', true).single(),
+        supabase.from('body_measurements').select('weight_kg, height_cm').eq('client_id', clientId).order('measured_at', { ascending: false }).limit(1).single(),
+      ]);
 
+      if (c) {
+        setClient({
+          full_name: c.full_name,
+          age: c.birth_date ? calculateAge(c.birth_date) : null,
+          objective: c.objective,
+          health_conditions: c.health_conditions,
+          medications: c.medications,
+          medical_notes: c.medical_notes,
+          weight_kg: meas?.weight_kg ?? null,
+          height_cm: meas?.height_cm ?? null,
+          resting_hr: c.resting_hr,
+        });
+      }
       if (plan) setGroups((plan as any).workout_groups ?? []);
     }
     load();
@@ -129,6 +162,30 @@ export default function NewSessionPage() {
     }]);
   }
 
+  async function handleAISuggest() {
+    if (!client) return;
+    setAiLoading(true);
+    setAiError('');
+    setAiSuggestion('');
+    setAiOpen(true);
+
+    const currentExercises = exercises.filter(e => e.name.trim()).map(e => e.name);
+
+    try {
+      const res = await fetch('/api/ai/suggest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client, currentExercises }),
+      });
+      const data = await res.json();
+      if (data.error) { setAiError(data.error); }
+      else { setAiSuggestion(data.suggestion); }
+    } catch {
+      setAiError('Não foi possível conectar à IA. Verifique sua conexão.');
+    }
+    setAiLoading(false);
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
@@ -174,9 +231,9 @@ export default function NewSessionPage() {
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
         <Link href={`/clients/${clientId}`}><Button variant="ghost" size="icon"><ArrowLeft className="h-5 w-5" /></Button></Link>
-        <div>
+        <div className="flex-1">
           <h1 className="text-2xl font-bold">Nova Sessão de Treino</h1>
-          <p className="text-sm text-muted-foreground">Registre os dados do treino</p>
+          <p className="text-sm text-muted-foreground">Registre os dados do treino{client ? ` · ${client.full_name}` : ''}</p>
         </div>
       </div>
 
@@ -213,30 +270,7 @@ export default function NewSessionPage() {
           </CardContent>
         </Card>
 
-        {/* Dados Fisiológicos */}
-        <Card>
-          <CardHeader><CardTitle className="text-base flex items-center gap-2"><Heart className="h-4 w-4 text-red-500" />Dados Fisiológicos</CardTitle></CardHeader>
-          <CardContent className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label>FC Repouso pré-treino (bpm)</Label>
-              <Input type="number" min="30" max="200" value={form.resting_hr} onChange={(e) => setField('resting_hr', e.target.value)} placeholder="ex: 65" />
-            </div>
-            <div className="space-y-2">
-              <Label>FC Média durante o treino (bpm)</Label>
-              <Input type="number" min="30" max="250" value={form.avg_hr} onChange={(e) => setField('avg_hr', e.target.value)} placeholder="ex: 145" />
-            </div>
-            <div className="space-y-2">
-              <Label>FC Máxima atingida (bpm)</Label>
-              <Input type="number" min="30" max="250" value={form.max_hr} onChange={(e) => setField('max_hr', e.target.value)} placeholder="ex: 178" />
-            </div>
-            <div className="space-y-2">
-              <Label>PA pré-treino (mmHg)</Label>
-              <Input value={form.pre_bp} onChange={(e) => setField('pre_bp', e.target.value)} placeholder="ex: 120/80" />
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Percepção de Esforço */}
+        {/* Percepção de Esforço (sempre visível) */}
         <Card>
           <CardHeader><CardTitle className="text-base flex items-center gap-2"><Brain className="h-4 w-4 text-purple-500" />Percepção e Bem-estar</CardTitle></CardHeader>
           <CardContent className="space-y-6">
@@ -261,9 +295,7 @@ export default function NewSessionPage() {
                 <span>Muito leve</span><span>Leve</span><span>Moderado</span><span>Pesado</span><span>Máximo</span>
               </div>
             </div>
-
             <Separator />
-
             <div className="grid sm:grid-cols-3 gap-4">
               {[
                 { field: 'energy_level', label: 'Nível de energia pré-treino' },
@@ -274,24 +306,17 @@ export default function NewSessionPage() {
                   <Label>{label}</Label>
                   <div className="flex gap-1">
                     {[1,2,3,4,5].map((n) => (
-                      <button
-                        key={n}
-                        type="button"
-                        onClick={() => setField(field, String(n))}
+                      <button key={n} type="button" onClick={() => setField(field, String(n))}
                         className={`flex-1 py-2 rounded text-xs font-medium border transition-colors ${
                           form[field as keyof typeof form] === String(n)
                             ? 'bg-primary text-white border-primary'
                             : 'border-gray-200 hover:bg-muted'
                         }`}
-                      >
-                        {n}
-                      </button>
+                      >{n}</button>
                     ))}
                   </div>
                   {(form as any)[field] && (
-                    <p className="text-xs text-muted-foreground text-center">
-                      {ratingLabels[parseInt((form as any)[field])]}
-                    </p>
+                    <p className="text-xs text-muted-foreground text-center">{ratingLabels[parseInt((form as any)[field])]}</p>
                   )}
                 </div>
               ))}
@@ -299,18 +324,63 @@ export default function NewSessionPage() {
           </CardContent>
         </Card>
 
-        {/* Exercícios Executados */}
+        {/* Dados Fisiológicos — recolhível */}
+        <Card>
+          <CardHeader>
+            <button
+              type="button"
+              className="flex items-center justify-between w-full text-left"
+              onClick={() => setShowPhysio((v) => !v)}
+            >
+              <CardTitle className="text-base flex items-center gap-2">
+                <Heart className="h-4 w-4 text-red-500" />
+                Dados Fisiológicos
+                <span className="text-xs font-normal text-muted-foreground">(opcional)</span>
+              </CardTitle>
+              {showPhysio ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+            </button>
+          </CardHeader>
+          {showPhysio && (
+            <CardContent className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>FC Repouso pré-treino (bpm)</Label>
+                <Input type="number" min="30" max="200" value={form.resting_hr} onChange={(e) => setField('resting_hr', e.target.value)} placeholder="ex: 65" />
+              </div>
+              <div className="space-y-2">
+                <Label>FC Média durante o treino (bpm)</Label>
+                <Input type="number" min="30" max="250" value={form.avg_hr} onChange={(e) => setField('avg_hr', e.target.value)} placeholder="ex: 145" />
+              </div>
+              <div className="space-y-2">
+                <Label>FC Máxima atingida (bpm)</Label>
+                <Input type="number" min="30" max="250" value={form.max_hr} onChange={(e) => setField('max_hr', e.target.value)} placeholder="ex: 178" />
+              </div>
+              <div className="space-y-2">
+                <Label>PA pré-treino (mmHg)</Label>
+                <Input value={form.pre_bp} onChange={(e) => setField('pre_bp', e.target.value)} placeholder="ex: 120/80" />
+              </div>
+            </CardContent>
+          )}
+        </Card>
+
+        {/* Exercícios */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base flex items-center gap-2"><Activity className="h-4 w-4" />Exercícios Executados</CardTitle>
-            <Button type="button" size="sm" variant="outline" onClick={addFreeExercise}>
-              <Plus className="h-4 w-4 mr-1" />Adicionar
-            </Button>
+            <div className="flex gap-2">
+              {client && (
+                <Button type="button" size="sm" variant="outline" onClick={handleAISuggest} className="text-purple-700 border-purple-300 hover:bg-purple-50">
+                  <Sparkles className="h-4 w-4 mr-1" />IA
+                </Button>
+              )}
+              <Button type="button" size="sm" variant="outline" onClick={addFreeExercise}>
+                <Plus className="h-4 w-4 mr-1" />Adicionar
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {exercises.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-4">
-                {groups.length > 0 ? 'Selecione um treino acima para pré-carregar os exercícios' : 'Adicione exercícios manualmente'}
+                {groups.length > 0 ? 'Selecione um treino acima para pré-carregar os exercícios' : 'Adicione exercícios manualmente ou use a IA para sugestões'}
               </p>
             ) : exercises.map((ex, exIdx) => (
               <div key={ex.id} className="border rounded-lg p-4 space-y-3">
@@ -325,7 +395,6 @@ export default function NewSessionPage() {
                     <Trash2 className="h-4 w-4 text-destructive" />
                   </Button>
                 </div>
-
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
@@ -340,41 +409,22 @@ export default function NewSessionPage() {
                     </thead>
                     <tbody>
                       {ex.sets.map((set, setIdx) => (
-                        <tr key={setIdx} className="gap-2">
+                        <tr key={setIdx}>
                           <td className="pr-2 py-1 text-muted-foreground font-medium">{set.set}</td>
                           <td className="pr-2 py-1">
-                            <Input
-                              type="number" min="0"
-                              value={set.reps ?? ''}
-                              onChange={(e) => updateSet(exIdx, setIdx, 'reps', e.target.value ? parseInt(e.target.value) : null)}
-                              className="h-8 w-16"
-                              placeholder="12"
-                            />
+                            <Input type="number" min="0" value={set.reps ?? ''} onChange={(e) => updateSet(exIdx, setIdx, 'reps', e.target.value ? parseInt(e.target.value) : null)} className="h-8 w-16" placeholder="12" />
                           </td>
                           <td className="pr-2 py-1">
-                            <Input
-                              type="number" min="0" step="0.5"
-                              value={set.load_kg ?? ''}
-                              onChange={(e) => updateSet(exIdx, setIdx, 'load_kg', e.target.value ? parseFloat(e.target.value) : null)}
-                              className="h-8 w-20"
-                              placeholder="20"
-                            />
+                            <Input type="number" min="0" step="0.5" value={set.load_kg ?? ''} onChange={(e) => updateSet(exIdx, setIdx, 'load_kg', e.target.value ? parseFloat(e.target.value) : null)} className="h-8 w-20" placeholder="20" />
                           </td>
                           <td className="pr-2 py-1">
                             <Select value={set.rir !== null ? String(set.rir) : ''} onValueChange={(v) => updateSet(exIdx, setIdx, 'rir', v ? parseInt(v) : null)}>
                               <SelectTrigger className="h-8 w-16"><SelectValue placeholder="—" /></SelectTrigger>
-                              <SelectContent>
-                                {[0,1,2,3,4].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
-                              </SelectContent>
+                              <SelectContent>{[0,1,2,3,4].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
                             </Select>
                           </td>
                           <td className="pr-2 py-1">
-                            <Input
-                              value={set.note}
-                              onChange={(e) => updateSet(exIdx, setIdx, 'note', e.target.value)}
-                              className="h-8"
-                              placeholder="obs..."
-                            />
+                            <Input value={set.note} onChange={(e) => updateSet(exIdx, setIdx, 'note', e.target.value)} className="h-8" placeholder="obs..." />
                           </td>
                           <td className="py-1">
                             <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={() => removeSet(exIdx, setIdx)}>
@@ -386,7 +436,6 @@ export default function NewSessionPage() {
                     </tbody>
                   </table>
                 </div>
-
                 <Button type="button" variant="ghost" size="sm" onClick={() => addSet(exIdx)}>
                   <Plus className="h-3 w-3 mr-1" />Adicionar série
                 </Button>
@@ -399,12 +448,7 @@ export default function NewSessionPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">Observações do Treino</CardTitle></CardHeader>
           <CardContent>
-            <Textarea
-              value={form.trainer_notes}
-              onChange={(e) => setField('trainer_notes', e.target.value)}
-              placeholder="Anotações sobre o desempenho, dificuldades, progressões observadas..."
-              rows={3}
-            />
+            <Textarea value={form.trainer_notes} onChange={(e) => setField('trainer_notes', e.target.value)} placeholder="Anotações sobre o desempenho, dificuldades, progressões observadas..." rows={3} />
           </CardContent>
         </Card>
 
@@ -416,6 +460,39 @@ export default function NewSessionPage() {
           </Button>
         </div>
       </form>
+
+      {/* Dialog de sugestão de IA */}
+      <Dialog open={aiOpen} onOpenChange={setAiOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-purple-600" />
+              Sugestão de Exercícios — IA
+            </DialogTitle>
+          </DialogHeader>
+          {aiLoading && (
+            <div className="flex flex-col items-center gap-3 py-8">
+              <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
+              <p className="text-sm text-muted-foreground">Analisando o perfil do cliente...</p>
+            </div>
+          )}
+          {aiError && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
+              {aiError}
+            </div>
+          )}
+          {aiSuggestion && (
+            <div className="prose prose-sm max-w-none">
+              <div className="bg-purple-50 rounded-lg p-4 text-sm whitespace-pre-wrap leading-relaxed">
+                {aiSuggestion}
+              </div>
+              <p className="text-xs text-muted-foreground mt-3">
+                Sugestão gerada por IA com base no perfil do cliente. Avalie conforme seu julgamento profissional.
+              </p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
