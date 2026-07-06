@@ -55,7 +55,7 @@ export default function SchedulePage() {
     const [{ data: sl }, { data: bk }, { data: reqs }] = await Promise.all([
       supabase.from('schedule_slots').select('*').eq('trainer_id', t.id).order('slot_date').order('slot_time'),
       supabase.from('bookings').select('*, schedule_slots(*), clients(full_name, phone)').eq('trainer_id', t.id).order('created_at', { ascending: false }),
-      supabase.from('booking_requests').select('*, schedule_slots(slot_date, slot_time)').eq('trainer_id', t.id).eq('status', 'pending').order('created_at', { ascending: false }),
+      supabase.from('booking_requests').select('*').eq('trainer_id', t.id).in('status', ['pending']).order('created_at', { ascending: false }),
     ]);
 
     setSlots(sl ?? []);
@@ -265,6 +265,9 @@ export default function SchedulePage() {
             <div className="space-y-2">
               {slots.map((slot) => {
                 const status = statusMap[slot.status];
+                const request = slot.status === 'booked'
+                  ? bookingRequests.find((r: any) => r.slot_id === slot.id) ?? null
+                  : null;
                 return (
                   <Card key={slot.id}>
                     <CardContent className="p-4 flex items-center gap-4">
@@ -276,20 +279,34 @@ export default function SchedulePage() {
                           <span className="font-medium">{formatDate(slot.slot_date)}</span>
                           <span className="text-muted-foreground">{formatTime(slot.slot_time)}</span>
                           <Badge variant={status.variant}>{status.label}</Badge>
+                          {request && (
+                            <span className="text-sm font-medium text-blue-700">{request.guest_name} · {request.guest_phone}</span>
+                          )}
                         </div>
                         <div className="flex gap-3 text-sm text-muted-foreground mt-1">
                           <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{slot.duration_min} min</span>
                           <span className="flex items-center gap-1 text-green-600 font-medium"><DollarSign className="h-3 w-3" />{formatCurrency(slot.price_cents)}</span>
                         </div>
                       </div>
-                      {slot.status === 'available' && (
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="outline" onClick={() => blockSlot(slot.id)}>Bloquear</Button>
-                          <Button size="sm" variant="ghost" onClick={() => deleteSlot(slot.id)}>
-                            <XCircle className="h-4 w-4 text-destructive" />
+                      <div className="flex gap-2">
+                        {slot.status === 'available' && (
+                          <>
+                            <Button size="sm" variant="outline" onClick={() => blockSlot(slot.id)}>Bloquear</Button>
+                            <Button size="sm" variant="ghost" onClick={() => deleteSlot(slot.id)}>
+                              <XCircle className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </>
+                        )}
+                        {slot.status === 'booked' && (
+                          <Button size="sm" variant="outline" onClick={async () => {
+                            await supabase.from('schedule_slots').update({ status: 'available' }).eq('id', slot.id);
+                            if (request) await supabase.from('booking_requests').update({ status: 'cancelled' }).eq('id', request.id);
+                            loadAll();
+                          }}>
+                            Liberar
                           </Button>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </CardContent>
                   </Card>
                 );

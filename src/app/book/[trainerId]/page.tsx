@@ -111,6 +111,13 @@ export default function PublicBookingPage() {
       return;
     }
 
+    // Bloqueia o slot automaticamente para evitar duplo agendamento
+    await supabase
+      .from('schedule_slots')
+      .update({ status: 'booked' })
+      .eq('id', selected.id)
+      .eq('status', 'available');
+
     setStep('done');
     setSubmitting(false);
   }
