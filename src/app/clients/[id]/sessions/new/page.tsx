@@ -11,7 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { ArrowLeft, Plus, Trash2, Heart, Activity, Brain, Save, ChevronDown, ChevronUp, Sparkles, Loader2 } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Heart, Activity, Brain, Save, ChevronDown, ChevronUp, Sparkles, Loader2, Lock } from 'lucide-react';
 import Link from 'next/link';
 import { pseLabel, calculateAge } from '@/lib/utils';
 import type { WorkoutGroup, PrescribedExercise, SetData } from '@/types/database';
@@ -44,6 +44,7 @@ export default function NewSessionPage() {
   const supabase = createClient();
 
   const [trainerId, setTrainerId] = useState('');
+  const [subscriptionActive, setSubscriptionActive] = useState(false);
   const [client, setClient] = useState<ClientProfile | null>(null);
   const [groups, setGroups] = useState<GroupWithExercises[]>([]);
   const [loading, setLoading] = useState(false);
@@ -71,9 +72,10 @@ export default function NewSessionPage() {
     async function load() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-      const { data: t } = await supabase.from('trainers').select('id').eq('user_id', user.id).single();
+      const { data: t } = await supabase.from('trainers').select('id, subscription_status').eq('user_id', user.id).single();
       if (!t) return;
       setTrainerId(t.id);
+      setSubscriptionActive((t as any).subscription_status === 'active');
 
       const [{ data: c }, { data: plan }, { data: meas }] = await Promise.all([
         supabase.from('clients').select('*').eq('id', clientId).single(),
@@ -368,9 +370,17 @@ export default function NewSessionPage() {
             <CardTitle className="text-base flex items-center gap-2"><Activity className="h-4 w-4" />Exercícios Executados</CardTitle>
             <div className="flex gap-2">
               {client && (
-                <Button type="button" size="sm" variant="outline" onClick={handleAISuggest} className="text-purple-700 border-purple-300 hover:bg-purple-50">
-                  <Sparkles className="h-4 w-4 mr-1" />IA
-                </Button>
+                subscriptionActive ? (
+                  <Button type="button" size="sm" variant="outline" onClick={handleAISuggest} className="text-purple-700 border-purple-300 hover:bg-purple-50">
+                    <Sparkles className="h-4 w-4 mr-1" />IA
+                  </Button>
+                ) : (
+                  <Link href="/pricing">
+                    <Button type="button" size="sm" variant="outline" className="text-gray-400 border-gray-200" title="Disponível no plano pago">
+                      <Lock className="h-4 w-4 mr-1" />IA
+                    </Button>
+                  </Link>
+                )
               )}
               <Button type="button" size="sm" variant="outline" onClick={addFreeExercise}>
                 <Plus className="h-4 w-4 mr-1" />Adicionar

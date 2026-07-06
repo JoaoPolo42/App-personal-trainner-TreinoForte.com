@@ -1,11 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { createClient } from '@/lib/supabase/server';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 export async function POST(req: NextRequest) {
+  // Verificar autenticação
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: 'Não autorizado.' }, { status: 401 });
+  }
+
+  // Verificar se o trainer tem assinatura ativa
+  const { data: trainer } = await supabase
+    .from('trainers')
+    .select('subscription_status')
+    .eq('user_id', user.id)
+    .single();
+
+  if (!trainer || (trainer as any).subscription_status !== 'active') {
+    return NextResponse.json(
+      { error: 'Recurso disponível apenas para assinantes. Acesse /pricing para assinar.' },
+      { status: 403 }
+    );
+  }
+
   if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json({ error: 'API key não configurada.' }, { status: 500 });
+    return NextResponse.json({ error: 'Serviço de IA temporariamente indisponível.' }, { status: 500 });
   }
 
   const body = await req.json();
